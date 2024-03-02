@@ -1,0 +1,119 @@
+from snakebids import bids, generate_inputs, get_wildcard_constraints
+from pathlib import Path
+
+configfile: 'config/snakebids.yml'
+localrules: all
+
+derivatives = config.get("derivatives")
+# Get input wildcards
+inputs = generate_inputs(
+    bids_dir=config["bids_dir"],
+    pybids_inputs=config["pybids_inputs"],
+    pybidsdb_dir=config.get("pybidsdb_dir"),
+    pybidsdb_reset=config.get("pybidsdb_reset"),
+    derivatives=derivatives == [] or derivatives,
+    participant_label=config.get("participant_label", None),
+    exclude_participant_label=config.get("exclude_participant_label", None),
+    validate=not config.get("plugins.validator.skip", False)
+)
+sourcedata = Path(config["output_dir"], "sourcedata")
+
+
+resource_scopes:
+    gpus="local",
+
+container: config['container']["mdt"]
+
+
+rule create_protocol:
+    """If you have delta, TR, and TE specify it here using:
+        --Delta [], --delta [], --TE [], --TR [] at the shell command below
+    """
+    input:
+        bvec = inputs["bvec"].path,
+        bval = inputs["bval"].path,
+    output:
+        protocol = temp(bids(
+            sourcedata,
+            datatype="dwi",
+            suffix="protocol.prtcl",
+            **inputs["dwi"].wildcards,
+        ))
+    params:
+        te=f"--TE {config['te']}" if config["te"] is not None else "",
+        tr=f"--TR {config['tr']}" if config["tr"] is not None else "",
+    group: "subj"
+    shell:
+        """
+        mdt-create-protocol -o {output} {input.bvec} {input.bval} \\
+            {params.te} {params.tr}
+        """
+
+
+
+rule fit_model:
+    input:
+        data = inputs["dwi"].path,
+        protocol = rules.create_protocol.output,
+        brainmask = inputs["mask"].path,
+    output:
+        raw=directory(bids(
+            sourcedata,
+            datatype="dwi",
+            suffix="NODDI",
+            **inputs["dwi"].wildcards,
+        )),
+    params:
+        model= "NODDI"
+    group: "subj"
+    resources:
+        runtime=360,
+        mem_mb=16000,
+        gpus=1,
+        gpu_type="p100",
+    shell:
+        """
+        mdt-model-fit -o {output} {params.model} \\
+            {input.data} {input.protocol} {input.brainmask}
+        """
+
+rule copy_outputs:
+    input:
+        rules.fit_model.output[0]
+    output:
+        odi=bids(
+            config["output_dir"],
+            datatype="dwi",
+            model="noddi",
+            desc="odi",
+            suffix="mdp.nii.gz",
+            **inputs["dwi"].wildcards,
+        ),
+        ndi=bids(
+            config["output_dir"],
+            datatype="dwi",
+            model="noddi",
+            desc="ndi",
+            suffix="mdp.nii.gz",
+            **inputs["dwi"].wildcards,
+        ),
+        csf=bids(
+            config["output_dir"],
+            datatype="dwi",
+            model="noddi",
+            label="csf",
+            desc="fw",
+            suffix="mdp.nii.gz",
+            **inputs["dwi"].wildcards,
+        ),
+    group: "subj"
+    shell:
+        """
+        cp {input}/NODDI/NDI.nii.gz {output.ndi}
+        cp {input}/NODDI/ODI.nii.gz {output.odi}
+        cp {input}/NODDI/w_csf.w.nii.gz {output.csf}
+        """
+
+rule all:
+    input:
+        inputs["dwi"].expand(rules.copy_outputs.output)

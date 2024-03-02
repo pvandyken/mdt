@@ -1,0 +1,5 @@
+include mdt/**/*.yaml
+include mdt/**/*.yml
+include mdt/**/*.json
+include mdt/**/Snakefile
+include mdt/**/*.smk
