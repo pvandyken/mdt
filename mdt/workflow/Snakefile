@@ -66,11 +66,11 @@ rule fit_model:
     params:
         model= "NODDI"
     group: "subj"
+    threads: 16
     resources:
         runtime=360,
-        mem_mb=16000,
-        gpus=1,
-        gpu_type="p100",
+        gpu=1,
+        mem_mb=12000,
     shell:
         """
         mdt-model-fit -o {output} {params.model} \\
